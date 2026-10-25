@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_logs(api_key_id);
+CREATE TABLE IF NOT EXISTS semantic_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

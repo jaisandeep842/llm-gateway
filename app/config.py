@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     database_path: str = "gateway.db"
     rate_limit_per_minute: int = 10
     cache_ttl_seconds: int = 3600
+    semantic_cache_enabled: bool = False
+    semantic_threshold: float = 0.95
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
 
 
 settings = Settings()
