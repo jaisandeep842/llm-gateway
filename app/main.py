@@ -1,18 +1,20 @@
+import json
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 
 from app.cache import get_cached, is_cacheable, make_cache_key, set_cached
 from app.config import settings
 from app.db import get_db, init_db
-from app.providers.groq import GroqError, chat_completion
+from app.providers.groq import GroqError, chat_completion, stream_completion
 from app.ratelimit import enforce_rate_limit
 from app.routes.admin import router as admin_router
 from app.routes.usage import router as usage_router
 from app.schemas import ChatRequest, ChatResponse
 
-# Flag off hone par semantic module import nahi hoga, toh embedding model load nahi hoga
 if settings.semantic_cache_enabled:
     from app import semantic
 
@@ -51,6 +53,63 @@ def log_usage(
         )
 
 
+def sse(data: dict) -> str:
+    """Ek Server-Sent Event line banata hai."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def replay_cached(resp: ChatResponse, x_cache: str) -> AsyncIterator[str]:
+    """Cache hit: poora answer ek event mein bhejte hain."""
+    yield sse({"delta": resp.content})
+    yield sse({"done": True, "model": resp.model, "x_cache": x_cache})
+    yield "data: [DONE]\n\n"
+
+
+async def live_stream(
+    req: ChatRequest,
+    key_id: int,
+    cache_key: str | None,
+    cacheable: bool,
+    started: float,
+) -> AsyncIterator[str]:
+    """Cache miss: Groq se tokens forward karte hain, stream khatam hone par cache aur usage save karte hain."""
+    parts: list[str] = []
+    model = settings.groq_model
+    prompt_tokens = None
+    completion_tokens = None
+
+    try:
+        async for ev in stream_completion(req):
+            if "delta" in ev:
+                parts.append(ev["delta"])
+                yield sse({"delta": ev["delta"]})
+            elif ev.get("done"):
+                model = ev["model"]
+                usage = ev.get("usage") or {}
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+    except GroqError as e:
+        yield sse({"error": str(e)})
+        yield "data: [DONE]\n\n"
+        return
+
+    result = ChatResponse(
+        content="".join(parts),
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    log_usage(key_id, model, prompt_tokens, completion_tokens, elapsed_ms(started), cache_hit=0)
+
+    if cacheable and cache_key is not None:
+        set_cached(cache_key, result)
+        if settings.semantic_cache_enabled:
+            semantic.store(req, result)
+
+    yield sse({"done": True, "model": model, "x_cache": "MISS"})
+    yield "data: [DONE]\n\n"
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -64,25 +123,40 @@ async def chat(
 ):
     started = time.perf_counter()
     cacheable = is_cacheable(req)
+    cache_key = make_cache_key(req) if cacheable else None
 
+    # Cache lookup (stream aur non-stream dono ke liye same)
+    cached: ChatResponse | None = None
+    x_cache = ""
     if cacheable:
-        # 1. Exact cache (same text)
-        cache_key = make_cache_key(req)
         cached = get_cached(cache_key)
         if cached is not None:
-            log_usage(key["id"], cached.model, 0, 0, elapsed_ms(started), cache_hit=1)
-            response.headers["X-Cache"] = "HIT"
-            return cached
+            x_cache = "HIT"
+        elif settings.semantic_cache_enabled:
+            cached = semantic.find_similar(req)
+            if cached is not None:
+                x_cache = "HIT-SEMANTIC"
 
-        # 2. Semantic cache (similar meaning), sirf flag on hone par
-        if settings.semantic_cache_enabled:
-            similar = semantic.find_similar(req)
-            if similar is not None:
-                log_usage(key["id"], similar.model, 0, 0, elapsed_ms(started), cache_hit=1)
-                response.headers["X-Cache"] = "HIT-SEMANTIC"
-                return similar
+    if cached is not None:
+        log_usage(key["id"], cached.model, 0, 0, elapsed_ms(started), cache_hit=1)
+        if req.stream:
+            return StreamingResponse(
+                replay_cached(cached, x_cache),
+                media_type="text/event-stream",
+                headers={"X-Cache": x_cache},
+            )
+        response.headers["X-Cache"] = x_cache
+        return cached
 
-    # 3. Cache miss: Groq ko call karo
+    # Cache miss + stream
+    if req.stream:
+        return StreamingResponse(
+            live_stream(req, key["id"], cache_key, cacheable, started),
+            media_type="text/event-stream",
+            headers={"X-Cache": "MISS"},
+        )
+
+    # Cache miss + normal JSON response
     try:
         result = await chat_completion(req)
     except GroqError as e:
@@ -97,7 +171,7 @@ async def chat(
         cache_hit=0,
     )
 
-    if cacheable:
+    if cacheable and cache_key is not None:
         set_cached(cache_key, result)
         if settings.semantic_cache_enabled:
             semantic.store(req, result)
