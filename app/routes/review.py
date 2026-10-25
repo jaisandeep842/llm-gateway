@@ -42,7 +42,14 @@ class ReviewResponse(BaseModel):
     results: list[ReviewResult]
 
 
-def _log_usage(key_id: int, model: str, prompt_tokens, completion_tokens, latency_ms: int, cache_hit: int) -> None:
+def _log_usage(
+    key_id: int,
+    model: str,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    latency_ms: int,
+    cache_hit: int,
+) -> None:
     with get_db() as conn:
         conn.execute(
             """
@@ -63,7 +70,7 @@ async def review_one(file: ReviewFile, key_id: int) -> ReviewResult:
             ChatMessage(role="system", content=SYSTEM_PROMPT),
             ChatMessage(role="user", content=f"File: {file.name}\n\n```\n{file.content}\n```"),
         ],
-        max_tokens=1024,
+        max_tokens=4096,
         temperature=0,
     )
 
@@ -71,7 +78,7 @@ async def review_one(file: ReviewFile, key_id: int) -> ReviewResult:
     cache_key = make_cache_key(req)
 
     cached = get_cached(cache_key)
-    if cached is not None:
+    if cached is not None and cached.content.strip():
         latency = int((time.perf_counter() - started) * 1000)
         _log_usage(key_id, cached.model, 0, 0, latency, cache_hit=1)
         return ReviewResult(name=file.name, review=cached.content, cache="HIT")
@@ -82,14 +89,27 @@ async def review_one(file: ReviewFile, key_id: int) -> ReviewResult:
         return ReviewResult(name=file.name, error=str(e))
 
     latency = int((time.perf_counter() - started) * 1000)
-    _log_usage(key_id, result.model, result.prompt_tokens, result.completion_tokens, latency, cache_hit=0)
+
+    if not result.content.strip():
+        return ReviewResult(
+            name=file.name,
+            error="Model returned an empty review. Please try again.",
+        )
+
+    _log_usage(
+        key_id,
+        result.model,
+        result.prompt_tokens,
+        result.completion_tokens,
+        latency,
+        cache_hit=0,
+    )
     set_cached(cache_key, result)
     return ReviewResult(name=file.name, review=result.content, cache="MISS")
 
 
 @router.post("/review", response_model=ReviewResponse)
 async def review(body: ReviewRequest, key: dict = Depends(enforce_rate_limit)):
-    # Files ek-ek karke review hongi, taaki Groq ki rate limit pe load kam rahe
     results = []
     for f in body.files:
         results.append(await review_one(f, key["id"]))
