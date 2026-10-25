@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     request_timeout: float = 30.0
     admin_key: str = ""
     database_path: str = "gateway.db"
+    rate_limit_per_minute: int = 10
 
 
 settings = Settings()

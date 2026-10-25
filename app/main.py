@@ -1,14 +1,14 @@
 import time
-from app.routes.usage import router as usage_router
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 
 from app.db import get_db, init_db
 from app.providers.groq import GroqError, chat_completion
+from app.ratelimit import enforce_rate_limit
 from app.routes.admin import router as admin_router
+from app.routes.usage import router as usage_router
 from app.schemas import ChatRequest, ChatResponse
-from app.security import get_current_key
 
 
 @asynccontextmanager
@@ -28,7 +28,7 @@ async def health():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, key: dict = Depends(get_current_key)):
+async def chat(req: ChatRequest, key: dict = Depends(enforce_rate_limit)):
     started = time.perf_counter()
     try:
         result = await chat_completion(req)
