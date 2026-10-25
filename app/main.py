@@ -14,6 +14,7 @@ from app.ratelimit import enforce_rate_limit
 from app.routes.admin import router as admin_router
 from app.routes.usage import router as usage_router
 from app.schemas import ChatRequest, ChatResponse
+from app.routes.review import router as review_router
 
 if settings.semantic_cache_enabled:
     from app import semantic
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LLM Gateway", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(usage_router)
+app.include_router(review_router)
 
 
 def elapsed_ms(started: float) -> int:
