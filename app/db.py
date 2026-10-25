@@ -45,7 +45,12 @@ def get_db():
     finally:
         conn.close()
 
-
 def init_db() -> None:
     with get_db() as conn:
         conn.executescript(SCHEMA)
+        # Purane gateway.db mein cache_hit column nahi hai, toh add karo
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(usage_logs)")]
+        if "cache_hit" not in cols:
+            conn.execute(
+                "ALTER TABLE usage_logs ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0"
+            )

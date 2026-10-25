@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     admin_key: str = ""
     database_path: str = "gateway.db"
     rate_limit_per_minute: int = 10
+    cache_ttl_seconds: int = 3600
 
 
 settings = Settings()
