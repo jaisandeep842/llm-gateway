@@ -15,6 +15,7 @@ from app.routes.admin import router as admin_router
 from app.routes.usage import router as usage_router
 from app.schemas import ChatRequest, ChatResponse
 from app.routes.review import router as review_router
+from fastapi.middleware.cors import CORSMiddleware
 
 if settings.semantic_cache_enabled:
     from app import semantic
@@ -27,6 +28,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LLM Gateway", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+      allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(admin_router)
 app.include_router(usage_router)
 app.include_router(review_router)
